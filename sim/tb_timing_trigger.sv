@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
-// Vector driver only: all expected behavior comes from the Python time table.
+// Expected behavior comes from Python absolute intervals. Three explicitly
+// guarded white-box phase deposits test 32-bit endpoint arithmetic only.
 module tb_timing_trigger #(
     parameter TIME_W = 32,
     parameter REPEAT_W = 16,
@@ -23,18 +24,29 @@ module tb_timing_trigger #(
     reg expected_error, expected_valid;
     reg [COUNT_W-1:0] expected_count;
     reg [1023:0] context_name;
+    reg phase_probe;
+    reg [TIME_W-1:0] target_phase;
     initial begin
         row = 0;
         fd = $fopen("vectors.txt", "r");
         if (!fd) $fatal(1, "Cannot open vectors.txt");
         while (!$feof(fd)) begin
             @(negedge clk);
-            rc = $fscanf(fd, "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %s\n",
+            rc = $fscanf(fd, "%h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %h %s\n",
                          rst, command, trigger, cfg_enable, cfg_delay, cfg_width,
                          cfg_period, cfg_repeats, expected_pulse, expected_busy,
                          expected_armed, expected_done, expected_aborted,
-                         expected_error, expected_valid, expected_count, context_name);
-            if (rc != 17) $fatal(1, "Malformed vector row %0d", row);
+                         expected_error, expected_valid, expected_count, phase_probe, target_phase, context_name);
+            if (rc != 19) $fatal(1, "Malformed vector row %0d", row);
+            if (phase_probe) begin
+                if (TIME_W != 32 || busy !== 1'b1 || rst || trigger || command != 0 ||
+                    dut.repeats_left !== dut.repeats_active || dut.repeats_active != 1 ||
+                    target_phase == 0 || target_phase > dut.last_phase ||
+                    target_phase - 1'b1 <= dut.phase)
+                    $fatal(1, "Invalid arithmetic probe row %0d %0s", row, context_name);
+                // Next rising edge enters target_phase through normal RTL.
+                dut.phase = target_phase - 1'b1;
+            end
             @(posedge clk); #1;
             if ({pulse, busy, armed, done, aborted, command_error, config_valid, busy_trigger_count}
                 !== {expected_pulse, expected_busy, expected_armed, expected_done,

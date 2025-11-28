@@ -3,7 +3,8 @@
 The oracle never advances a phase/repeat counter. On accepted triggers it
 constructs half-open intervals from t0 + repeat * P + D for each channel.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import random
 
 NOP, COMMIT, ARM, CANCEL, STOP = range(5)
 
@@ -30,14 +31,21 @@ class Reference:
         self.edge = -1
         self.state, self.valid, self.count = "IDLE", False, 0
         self.active = self.inputs = Config()
-        self.windows, self.finish = (), None
+        self.windows, self.finish, self.t0 = (), None, None
         self.rows = []
         self.context = "initial"
 
     def packed(self, values):
         return sum(value << (lane * self.time_w) for lane, value in enumerate(values))
 
-    def step(self, command=NOP, trigger=0, rst=0, config=None):
+    def step(self, command=NOP, trigger=0, rst=0, config=None, probe_phase=None):
+        if probe_phase is not None:
+            # White-box arithmetic probe: omit uninteresting cycles only in
+            # the first repetition. Expected intervals remain absolute.
+            assert self.state == "RUN" and command == NOP and not trigger and not rst
+            assert config is None and self.edge - self.t0 < self.active.period
+            assert self.edge - self.t0 + 1 < probe_phase < self.active.period
+            self.edge = self.t0 + probe_phase - 1
         self.edge += 1
         if config is not None:
             assert 0 <= config.enable < 16
@@ -71,6 +79,7 @@ class Reference:
                 error = command != NOP
                 if trigger:
                     self.state = "RUN"
+                    self.t0 = self.edge
                     cfg = self.active
                     self.finish = self.edge + cfg.repeats * cfg.period
                     self.windows = [
@@ -91,7 +100,7 @@ class Reference:
         row = (rst, command, trigger, cfg.enable, self.packed(cfg.delay),
                self.packed(cfg.width), cfg.period, cfg.repeats, pulse,
                self.state == "RUN", self.state == "ARMED", done, aborted,
-               error, self.valid, self.count)
+               error, self.valid, self.count, probe_phase is not None, probe_phase or 0)
         self.rows.append((row, f"{self.context}:edge={self.edge}"))
 
     def begin(self, name, config):
@@ -200,9 +209,110 @@ def directed(model):
     model.step()
 
 
+def randomized(model):
+    """Small reproducible samples supplement explicit boundaries, not replace them."""
+    for seed in (7, 29, 83, 211, 997):
+        rng = random.Random(seed)
+        for case in range(12):
+            period = rng.randint(1, min(12, (1 << model.time_w) - 1))
+            repeats = rng.randint(1, min(4, (1 << model.repeat_w) - 1))
+            delay = tuple(rng.randrange(period) for _ in range(4))
+            width = tuple(rng.randint(1, period - value) for value in delay)
+            cfg = Config(period, repeats, rng.randrange(16), delay, width)
+            model.begin(f"seed-{seed}-case-{case}", cfg)
+            if case % 4 == 0:
+                model.step(CANCEL, trigger=1)
+                model.step(ARM, trigger=1)
+            model.step(trigger=1)
+            # Six of twelve samples per seed finish naturally. The others
+            # stop/reset amid a bounded schedule, then prove full recovery.
+            cut = rng.randint(1, period * repeats)
+            while model.state == "RUN":
+                elapsed = model.edge - model.t0 + 1
+                trigger = int(rng.randrange(3) == 0)
+                command = rng.choice((NOP, NOP, NOP, COMMIT, ARM, CANCEL, 5, 6, 7))
+                if case % 4 == 1 and elapsed == cut:
+                    model.step(STOP, trigger=1)
+                elif case % 4 == 3 and elapsed == cut:
+                    model.step(command, trigger=1, rst=1)
+                else:
+                    # Inputs can change without a successful IDLE commit.
+                    model.step(command, trigger, config=Config(0))
+            model.step()
+            if case % 2:
+                model.step(COMMIT, config=cfg)
+                model.step(ARM)
+                model.step(trigger=1)
+                model.drain()
+            # Each lane gets a width-zero failure and a period-overrun
+            # failure, spread across the fixed-seed samples.
+            if case % 3 == 0:
+                lane = case // 3
+                invalid_width = list(cfg.width)
+                invalid_width[lane] = 0
+                bad = replace(cfg, enable=cfg.enable | (1 << lane),
+                              width=tuple(invalid_width))
+                model.step(COMMIT, config=bad)
+                model.step(ARM, trigger=1)
+                model.step(trigger=1)
+            elif case % 3 == 1:
+                lane = case // 3
+                invalid_delay = list(cfg.delay)
+                invalid_delay[lane] = period
+                bad = replace(cfg, enable=cfg.enable | (1 << lane),
+                              delay=tuple(invalid_delay))
+                model.step(COMMIT, config=bad)
+                model.step(ARM)
+                model.step()
+
+
+def width_boundaries(model):
+    maximum = (1 << model.time_w) - 1
+    max_repeats = (1 << model.repeat_w) - 1
+    if model.time_w <= 8 and model.repeat_w <= 8:
+        model.begin("small-max-period-repeats-count-wrap",
+                    Config(maximum, max_repeats, 15,
+                           (0, 1, maximum - 1, maximum - 2),
+                           (maximum, 1, 1, 2)))
+        model.step(trigger=1)
+        # Full execution: phase/repetition boundaries and many modulo
+        # diagnostic-counter wraps, including a trigger on completion.
+        while model.state == "RUN":
+            model.step(trigger=1)
+        model.step()
+        model.step(ARM)
+        model.step(trigger=1)
+        model.step(STOP)
+        model.step(rst=1)
+        model.step(ARM)
+    elif model.time_w == 32:
+        for name, delay, width, period in (
+                ("max-endpoint", maximum - 1, 1, maximum),
+                ("unsigned-half-range", 1 << 31, 1, (1 << 31) + 1),
+                ("max-full-width", 0, maximum, maximum)):
+            model.begin(f"arithmetic-probe-{name}",
+                        Config(period, 1, 1, (delay, 0, 0, 0), (width, 1, 1, 1)))
+            model.step(trigger=1)
+            model.step(probe_phase=period - 2)
+            model.drain()
+        model.begin("max-repeat-start-stop", Config(2, max_repeats))
+        model.step(trigger=1)
+        model.step()
+        model.step()
+        model.step(STOP, trigger=1)
+        model.step()
+
+
 def write_vectors(path, time_w=32, repeat_w=16, count_w=32):
     model = Reference(time_w, repeat_w, count_w)
     directed(model)
+    randomized(model)
+    width_boundaries(model)
+    scenarios = len({context.split(":")[0] for _, context in model.rows})
+    probes = sum(row[16] for row, _ in model.rows)
+    print(f"Vectors: {len(model.rows)} checked edges, {scenarios} scenarios, "
+          f"5 seeds x 12 configurations, {probes} arithmetic probes; "
+          f"widths {time_w}/{repeat_w}/{count_w}", flush=True)
     path.write_text("".join(" ".join(f"{int(value):x}" for value in row) +
                             " " + context + "\n" for row, context in model.rows))
     return len(model.rows)

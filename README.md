@@ -8,7 +8,7 @@ D=0 可在 t0 后为高；D=0、W=P 的重复连续为高。
 ## 接口与命令
 
 所有输入在 clk 上升沿采样，rst 为同步高有效复位。cfg_delay/cfg_width 为四个
-TIME_W 位通道打包，通道 0 在最低位。TIME_W/REPEAT_W/COUNT_W 默认 32/16/32；
+TIME_W 位通道打包，通道 0 在最低位。TIME_W/REPEAT_W/COUNT_W 均须 ≥1，默认 32/16/32；
 缩小参数用于边界回归。trigger 为一个时钟周期的同步脉冲；首版不含异步捕获或 CDC。
 
 | command | 值 | 行为 |
@@ -37,11 +37,19 @@ RUN 的再次触发不重启，只累加 busy_trigger_count（COUNT_W 位自然�
 
 ```sh
 python3 scripts/run.py sim
+# 只重跑受影响的位宽配置：
+python3 scripts/run.py sim --widths default
+python3 scripts/run.py sim --widths small
 ```
 
 入口自动查找 PATH 或本机 E:/iverilog/bin，也可设置 IVERILOG、VVP。
 所有生成文件位于忽略的 build/。sim/regression.py 从绝对事件区间产生独立期望，
 SV 驱动器逐拍检查输出、运行/武装、完成/中止、配置状态、命令错误与忙时计数。
+默认 32/16/32 回归检查 2,460 拍；4/3/3 回归检查 2,540 拍，其中完整执行
+P=15、R=7 并使忙时触发计数回绕 13 次。每组含 5 个固定种子各 12 组配置。
+默认位宽另有 3 个受限的内部 phase 注入探针，检查 2³¹ 与 2³²−1 附近的
+比较/结束边沿；它们不代表连续运行了数十亿拍。默认不输出波形；失败显示
+场景、种子/配置编号、边沿及实际/预期状态，向量保存在 build/sim/ 下供复现。
 详细开发记录在工程旁 fpga_timing_trigger_worklog/，不进入 Git。
 
 目标器件 XC7Z020-2CLG400I，100 MHz 尚待实际实现检查。板卡引脚、时钟源及硬件连接
