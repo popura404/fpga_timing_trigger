@@ -313,6 +313,36 @@ def write_vectors(path, time_w=32, repeat_w=16, count_w=32):
     print(f"Vectors: {len(model.rows)} checked edges, {scenarios} scenarios, "
           f"5 seeds x 12 configurations, {probes} arithmetic probes; "
           f"widths {time_w}/{repeat_w}/{count_w}", flush=True)
+    return _write_rows(path, model)
+
+
+def _write_rows(path, model):
     path.write_text("".join(" ".join(f"{int(value):x}" for value in row) +
                             " " + context + "\n" for row, context in model.rows))
     return len(model.rows)
+
+
+def write_comparison_vectors(path):
+    """Identical workload for the configurable core and generated fixed baseline."""
+    model = Reference()
+    cfg = Config(12, 3, 15, (0, 2, 4, 6), (2, 2, 2, 2))
+    model.begin("comparison-repeat-busy-trigger", cfg)
+    model.step(trigger=1)
+    while model.state == "RUN":
+        model.step(trigger=1)  # Includes the completion edge, with no restart.
+    model.step(trigger=1)
+    model.context = "comparison-rearm-stop"
+    model.step(ARM, trigger=1)  # The trigger concurrent with ARM is ignored.
+    model.step()
+    model.step(trigger=1)
+    for _ in range(4):
+        model.step(trigger=1)
+    model.step(STOP, trigger=1)
+    model.step()
+    model.context = "comparison-recovery-complete"
+    model.step(ARM, trigger=1)
+    model.step(trigger=1)
+    model.drain()
+    print(f"Comparison vectors: {len(model.rows)} checked edges; "
+          "P=12 R=3 enable=f D=0,2,4,6 W=2,2,2,2", flush=True)
+    return _write_rows(path, model)

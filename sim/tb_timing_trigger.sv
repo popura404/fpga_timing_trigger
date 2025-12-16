@@ -17,7 +17,16 @@ module tb_timing_trigger #(
     wire [3:0] pulse;
     wire busy, armed, done, aborted, command_error, config_valid;
     wire [COUNT_W-1:0] busy_trigger_count;
+`ifdef FIXED_BASELINE
+    fixed_top dut (
+        .clk(clk), .rst(rst), .command(command), .trigger(trigger),
+        .pulse(pulse), .busy(busy), .armed(armed), .done(done),
+        .aborted(aborted), .command_error(command_error),
+        .config_valid(config_valid), .busy_trigger_count(busy_trigger_count)
+    );
+`else
     timing_trigger #(.TIME_W(TIME_W), .REPEAT_W(REPEAT_W), .COUNT_W(COUNT_W)) dut (.*);
+`endif
     integer fd, rc, row;
     reg [3:0] expected_pulse;
     reg expected_busy, expected_armed, expected_done, expected_aborted;
@@ -39,6 +48,7 @@ module tb_timing_trigger #(
                          expected_error, expected_valid, expected_count, phase_probe, target_phase, context_name);
             if (rc != 19) $fatal(1, "Malformed vector row %0d", row);
             if (phase_probe) begin
+`ifndef FIXED_BASELINE
                 if (TIME_W != 32 || busy !== 1'b1 || rst || trigger || command != 0 ||
                     dut.repeats_left !== dut.repeats_active || dut.repeats_active != 1 ||
                     target_phase == 0 || target_phase > dut.last_phase ||
@@ -46,6 +56,9 @@ module tb_timing_trigger #(
                     $fatal(1, "Invalid arithmetic probe row %0d %0s", row, context_name);
                 // Next rising edge enters target_phase through normal RTL.
                 dut.phase = target_phase - 1'b1;
+`else
+                $fatal(1, "Arithmetic probes are disabled for fixed baseline");
+`endif
             end
             @(posedge clk); #1;
             if ({pulse, busy, armed, done, aborted, command_error, config_valid, busy_trigger_count}

@@ -52,5 +52,51 @@ P=15、R=7 并使忙时触发计数回绕 13 次。每组含 5 个固定种子�
 场景、种子/配置编号、边沿及实际/预期状态，向量保存在 build/sim/ 下供复现。
 详细开发记录在工程旁 fpga_timing_trigger_worklog/，不进入 Git。
 
-目标器件 XC7Z020-2CLG400I，100 MHz 尚待实际实现检查。板卡引脚、时钟源及硬件连接
-尚未确认，当前不提供虚构的板级约束或上板结果。
+## 器件实现与资源对比
+
+目标订货型号 XC7Z020-2CLG400I，Vivado 器件选择为 `xc7z020clg400-2`。
+已使用 Vivado 2025.2 完成综合、布局、物理优化、布线和寄存器路径检查：
+
+```sh
+python3 scripts/run.py implement --mode both
+python3 scripts/run.py sim --compare-fixed
+```
+
+仅重建可配置核心可用 `implement --mode configurable`。入口查找 PATH 或本机
+E:/AMDDesignTools/2025.2/Vivado/bin/vivado.bat，也可设置 VIVADO；本机已验证
+WSL Python 调用 Windows Vivado/Icarus。原生 Windows 使用 `python` 替代 `python3`。
+
+脚本在 build/vivado/ 中生成寄存器测试外壳：注册全部输入、采样全部输出，
+BUFG 放在基准位置 BUFGCTRL_X0Y0。10 ns 时钟、0.1 ns 用户时钟不确定度，
+对包括配置合法性检查在内的全部寄存器到寄存器路径做建立/保持检查。
+该外壳仅用于基准测试，其输入/输出寄存器延迟不属于生产 RTL 的 t0 定义。
+固定版由同一 RTL 的常量输入生成，四路 D=(0,2,4,6)、W=(2,2,2,2)、P=12、R=3。
+
+| 版本 | 核心 LUT | 核心 FF | 寄存器 WNS | 寄存器 WHS |
+| --- | ---: | ---: | ---: | ---: |
+| 可配置 | 510 | 398 | +2.351 ns | +0.065 ns |
+| 固定参数 | 187 | 91 | +4.660 ns | +0.095 ns |
+
+表中资源不含外壳；含外壳分别为 753 / 138 FF，均额外使用 1 个 BUFG。
+两版寄存器时序、时钟脉宽、约束覆盖和 DRC 错误检查通过；全部可布线网络完成布线。
+相同 90 拍时间表在两版均通过，覆盖重复、忙时触发、停止及恢复。固定版修改参数
+需重新综合；可配置版在 IDLE 提交参数即可，相对增加 323 LUT / 307 FF。
+这些是指定基准的结果，不是整板资源或最高工作频率。
+
+外壳端口采用 max/min=2.0/0.5 ns 的假设预算，OOC 端口未绑定实际布线位置，
+端口相关时序未验收；含端口的保持余量估计分别为 −1.511 / −1.484 ns。
+因此**不能把整个 timing_summary 或板级时序写成通过**。脚本保留这些结果，
+只对寄存器基准给出 PASS；实际集成必须替换端口预算并重新检查全部路径。
+
+每版的 metrics.txt、timing_register_paths.rpt、timing_summary.rpt、
+utilization_core.rpt、route_status.rpt、check_timing.rpt、drc.rpt 和 routed.dcp
+均在 build/vivado/<版本>/，可删除 build/ 后从源码重建。RTL、测试、工具入口
+分别位于 rtl/、sim/、scripts/；工程仅保留这一套 RTL 和自检环境。
+
+## 当前缺项
+
+2026-10-26 已连接本地硬件服务器，检测到 0 个下载目标。缺少具体板卡型号、
+时钟来源、GPIO 引脚与电平资料；尚未做板级适配、PS7/调试通道集成、比特流生成、
+下载、ILA 三组配置观察或外部仪器测量。OOC 的 ZPS7-1 警告保留在报告中。
+拿到真实板卡条件后，应验证同时输出、错开输出、有限重复三组，并检查停止延迟。
+100 MHz 基准下的数字时间单位为 10 ns；板上时钟、物理抖动和通道偏斜尚无实测证据。
