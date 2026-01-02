@@ -47,20 +47,30 @@ def main():
     sim.add_argument("--widths", choices=["all", "default", "small"], default="all")
     sim.add_argument("--compare-fixed", action="store_true",
                      help="Check generated fixed baseline and configurable RTL against the same schedule")
-    implement = actions.add_parser("implement", help="Device-only OOC implementation, no bitstream")
-    implement.add_argument("--mode", choices=["configurable", "fixed", "both"], default="configurable")
+    for name, help_text in (("implement", "OOC implementation; fail on any timing violation"),
+                            ("report", "Recheck routed checkpoints without rebuilding")):
+        action = actions.add_parser(name, help=help_text)
+        action.add_argument("--mode", choices=["configurable", "fixed", "both"], default="configurable")
     args = parser.parse_args()
-    if args.action == "implement":
+    if args.action in ("implement", "report"):
         vivado = executable("vivado")
+        failures = []
         for mode in (["configurable", "fixed"] if args.mode == "both" else [args.mode]):
             work = ROOT / "build" / "vivado" / mode
             work.mkdir(parents=True, exist_ok=True)
             command = [tool_path(Path(vivado), vivado), "-mode", "batch", "-source",
                        tool_path(ROOT / "scripts/implement.tcl", vivado), "-nojournal",
-                       "-log", "vivado.log", "-tclargs", mode]
+                       "-log", "report.log" if args.action == "report" else "vivado.log",
+                       "-tclargs", mode, "report" if args.action == "report" else "build"]
             if vivado.lower().endswith(".bat"):
                 command = [shutil.which("cmd.exe") or "cmd.exe", "/d", "/c", *command]
-            run(command, work)
+            try:
+                run(command, work)
+            except subprocess.CalledProcessError as error:
+                failures.append(f"{mode} (exit {error.returncode})")
+        if failures:
+            raise SystemExit("Build/timing checks failed: " + ", ".join(failures) +
+                             "; inspect each mode's reports and metrics.txt")
         return
     compiler = executable("iverilog")
     variants = [("default", (32, 16, 32)), ("small", (4, 3, 3))]

@@ -60,6 +60,8 @@ P=15、R=7 并使忙时触发计数回绕 13 次。每组含 5 个固定种子�
 ```sh
 python3 scripts/run.py implement --mode both
 python3 scripts/run.py sim --compare-fixed
+# 复核既有 routed.dcp，不重复综合、布局或布线：
+python3 scripts/run.py report --mode both
 ```
 
 仅重建可配置核心可用 `implement --mode configurable`。入口查找 PATH 或本机
@@ -83,15 +85,40 @@ BUFG 放在基准位置 BUFGCTRL_X0Y0。10 ns 时钟、0.1 ns 用户时钟不确
 需重新综合；可配置版在 IDLE 提交参数即可，相对增加 323 LUT / 307 FF。
 这些是指定基准的结果，不是整板资源或最高工作频率。
 
-外壳端口采用 max/min=2.0/0.5 ns 的假设预算，OOC 端口未绑定实际布线位置，
-端口相关时序未验收；含端口的保持余量估计分别为 −1.511 / −1.484 ns。
-因此**不能把整个 timing_summary 或板级时序写成通过**。脚本保留这些结果，
-只对寄存器基准给出 PASS；实际集成必须替换端口预算并重新检查全部路径。
+外壳端口采用 max/min=2.0/0.5 ns 的假设预算。两版当前的**整体时序状态为 FAIL**；
+`implement` 和 `report` 都返回非零，`--mode both` 仍检查完两版后汇总失败。
+这不阻止读取已生成的报告或运行独立仿真。metrics.txt 分别记录
+register_benchmark_status 与 full_design_timing_status，不能只看局部 PASS。
 
-每版的 metrics.txt、timing_register_paths.rpt、timing_summary.rpt、
+2026-10-26 重开原布线检查点，逐类核查全部端点，保持检查结果如下：
+
+| 路径 | 可配置版：失败/端点数、最差余量 | 固定版：失败/端点数、最差余量 |
+| --- | --- | --- |
+| 外壳输入 → 外壳输入寄存器 | 313/313，−1.511 ns | 5/5，−1.484 ns |
+| 寄存器 → 寄存器（含核心配置和运行路径） | 0/1220，+0.065 ns | 0/297，+0.095 ns |
+| 外壳输出寄存器 → 外壳输出 | 0/42，+1.858 ns | 0/42，+1.863 ns |
+
+全部负值止于外壳输入寄存器，没有核心直达或未分类的失败路径。可配置版最差路径为
+`cfg_delay[24] → cfg_delay_q_reg[24]/D`，不经过核心组合逻辑。数据到达时间为
+0.500+0.748=1.248 ns，保持要求约为 2.279+0.135+0.344=2.758 ns。
+其中数据网络状态为 HIERPORT、ROUTE 为空；时钟端口到 BUFG 的一段亦为估算，
+BUFG 后的 core_clk 则已实际布线。显示值取整后的差值与原始 slack 存在微小差异。
+
+因此约束并未遗漏，问题是当前假设预算与缺少真实连接位置的 OOC 边界模型无法闭合，
+现有证据没有显示核心 RTL 保持违例。[AMD UG905](https://docs.amd.com/r/en-US/ug905-vivado-hierarchical-design/Context-Constraints)
+说明 OOC 接口网络默认不布线，需要物理上下文。并行 cfg_* 是片内寄存器接口，
+不应把全部位直接分配成板外 GPIO。需在实际寄存器/VIO 等顶层集成后重新检查，
+真正板外接口还须有器件时序、板卡引脚、时钟及走线资料。
+本次修复了报告分类和失败退出状态，未改 RTL、时钟、输入/输出延迟、不确定度或异常路径，
+未添加人工延迟来掩盖失败；缺少实际集成上下文时不声称外部保持问题已修好。
+
+每版的 metrics.txt、timing_boundary.rpt、timing_input_paths.rpt、timing_output_paths.rpt、
+timing_register_paths.rpt、timing_summary.rpt、timing_constraints.xdc（实际约束快照）、
 utilization_core.rpt、route_status.rpt、check_timing.rpt、drc.rpt 和 routed.dcp
 均在 build/vivado/<版本>/，可删除 build/ 后从源码重建。RTL、测试、工具入口
 分别位于 rtl/、sim/、scripts/；工程仅保留这一套 RTL 和自检环境。
+`report` 使用检查点中的约束；指标中的 build_default_* 仅说明构建入口默认值，
+实际器件、周期和 BUFG 位置取自当前设计，完整约束以快照为准。
 
 ## 当前缺项
 
